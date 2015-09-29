@@ -31,6 +31,7 @@ function MailListener(options) {
     host: options.host,
     port: options.port,
     tls: options.tls,
+    keepalive: options.keepalive,
     tlsOptions: options.tlsOptions || {}
   });
 
@@ -62,6 +63,14 @@ function imapReady() {
       self.imap.on('mail', imapMail.bind(self));
     }
   });
+
+  if (this.imap._config.keepalive) {
+    this.imap.subscribeBox(this.mailbox, false, function(err, mailbox) {
+      if (err) {
+        self.emit('error', err);
+      }
+    });
+  }
 }
 
 function imapClose() {
@@ -125,9 +134,12 @@ function parseUnread() {
         f.once('error', function(err) {
           self.emit('error', err);
         });
-      }, function(err){
+      }, function (err, results) {
         if( err ) {
           self.emit('error', err);
+        } else if (options.keepalive) {
+          console.log("fetchagain")
+          parseUnread.call(this);
         }
       });
     }
