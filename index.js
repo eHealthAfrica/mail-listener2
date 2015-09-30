@@ -5,18 +5,19 @@ var MailParser = require("mailparser").MailParser;
 var fs = require("fs");
 var path = require('path');
 var async = require('async');
+var _ = require('underscore');
 
-module.exports = MailListener;
+
 
 function MailListener(options) {
   this.markSeen = !! options.markSeen;
   this.mailbox = options.mailbox || "INBOX";
-  if ('string' === typeof options.searchFilter) {
+  if (typeof options.searchFilter === 'string') {
     this.searchFilter = [options.searchFilter];
   } else {
     this.searchFilter = options.searchFilter || ["UNSEEN"];
   }
-  this.fetchUnreadOnStart = !! options.fetchUnreadOnStart;
+  this.fetchUnreadOnStart = !!options.fetchUnreadOnStart;
   this.mailParserOptions = options.mailParserOptions || {};
   if (options.attachments && options.attachmentOptions && options.attachmentOptions.stream) {
     this.mailParserOptions.streamAttachments = true;
@@ -24,6 +25,11 @@ function MailListener(options) {
   this.attachmentOptions = options.attachmentOptions || {};
   this.attachments = options.attachments || false;
   this.attachmentOptions.directory = (this.attachmentOptions.directory ? this.attachmentOptions.directory : '');
+
+
+  this.pollingBreak = options.pollingBreak
+
+
   this.imap = new Imap({
     xoauth2: options.xoauth2,
     user: options.username,
@@ -34,12 +40,19 @@ function MailListener(options) {
     tlsOptions: options.tlsOptions || {}
   });
 
+
+
+
+
   this.imap.once('ready', imapReady.bind(this));
   this.imap.once('close', imapClose.bind(this));
+  this.imap.once('end', function () { console.log("closed ended event"); });
   this.imap.on('error', imapError.bind(this));
 }
 
+
 util.inherits(MailListener, EventEmitter);
+
 
 MailListener.prototype.start = function() {
   this.imap.connect();
@@ -65,6 +78,7 @@ function imapReady() {
 }
 
 function imapClose() {
+  console.log("mail listener: server:disconnected");
   this.emit('server:disconnected');
 }
 
@@ -82,7 +96,8 @@ function parseUnread() {
     if (err) {
       self.emit('error', err);
     } else if (results.length > 0) {
-      async.each(results, function( result, callback) {
+      async.each(results, function( result, resultCallback) {
+        var callback1 = _.after(2, resultCallback);
         var f = self.imap.fetch(result, {
           bodies: '',
           markSeen: self.markSeen
@@ -90,28 +105,30 @@ function parseUnread() {
         f.on('message', function(msg, seqno) {
           var parser = new MailParser(self.mailParserOptions);
           var attributes = null;
-
           parser.on("end", function(mail) {
             if (!self.mailParserOptions.streamAttachments && mail.attachments && self.attachments) {
-              async.each(mail.attachments, function( attachment, callback) {
-                fs.writeFile(self.attachmentOptions.directory + attachment.generatedFileName, attachment.content, function(err) {
-                  if(err) {
+              async.each(mail.attachments, function( attachment, callback2) {
+                fs.writeFile( self.attachmentOptions.directory + attachment.generatedFileName, attachment.content, function (err) {
+                  if (err) {
                     self.emit('error', err);
-                    callback()
                   } else {
                     attachment.path = path.resolve(self.attachmentOptions.directory + attachment.generatedFileName);
                     self.emit('attachment', attachment);
-                    callback()
                   }
+
+                  callback2();
                 });
-              }, function(err){
+              }, function(err) {
+
                 self.emit('mail', mail, seqno, attributes);
-                callback()
+                callback1();
               });
             } else {
-              self.emit('mail',mail,seqno,attributes);
+              self.emit('mail', mail, seqno, attributes);
+              callback1();
             }
           });
+
           parser.on("attachment", function (attachment, email) {
             self.emit('attachment', attachment, email);
           });
@@ -122,14 +139,30 @@ function parseUnread() {
             attributes = attrs;
           });
         });
+
         f.once('error', function(err) {
           self.emit('error', err);
         });
-      }, function(err){
-        if( err ) {
+        f.once('end', function(err) {
+          callback1();
+        });
+      }, function (err) {
+        if (err) {
           self.emit('error', err);
         }
+        setTimeout(function () {
+          console.log("mail listener: stopping")
+          self.stop();
+        }, self.pollingBreak)
       });
+    } else {
+      setTimeout(function () {
+        console.log("mail listener: stopping")
+        self.stop();
+      }, self.pollingBreak)
     }
   });
 }
+
+
+module.exports = MailListener;
