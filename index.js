@@ -8,8 +8,7 @@ var async = require('async');
 var _ = require('underscore');
 
 
-
-function MailListener(options) {
+function MailListener (options) {
   this.markSeen = !! options.markSeen;
   this.mailbox = options.mailbox || "INBOX";
   if (typeof options.searchFilter === 'string') {
@@ -26,10 +25,6 @@ function MailListener(options) {
   this.attachments = options.attachments || false;
   this.attachmentOptions.directory = (this.attachmentOptions.directory ? this.attachmentOptions.directory : '');
 
-
-  this.pollingBreak = options.pollingBreak
-
-
   this.imap = new Imap({
     xoauth2: options.xoauth2,
     user: options.username,
@@ -37,34 +32,33 @@ function MailListener(options) {
     host: options.host,
     port: options.port,
     tls: options.tls,
+    keepAlive: false,
+    //debug: function (info) {console.log(info)},
     tlsOptions: options.tlsOptions || {}
   });
 
-
-
-
-
   this.imap.once('ready', imapReady.bind(this));
   this.imap.once('close', imapClose.bind(this));
-  this.imap.once('end', function () { console.log("closed ended event"); });
-  this.imap.on('error', imapError.bind(this));
+  this.imap.on('error',   imapError.bind(this));
 }
-
 
 util.inherits(MailListener, EventEmitter);
 
-
-MailListener.prototype.start = function() {
+MailListener.prototype.start = function () {
   this.imap.connect();
 };
 
-MailListener.prototype.stop = function() {
-  this.imap.end();
+MailListener.prototype.stop = function () {
+  console.log("mail listener: stopping");
+  var self = this;
+  // setTimeout(function () {
+    self.imap.end();
+  // }, 5000);
 };
 
 function imapReady() {
   var self = this;
-  this.imap.openBox(this.mailbox, false, function(err, mailbox) {
+  this.imap.openBox(this.mailbox, false, function (err, mailbox) {
     if (err) {
       self.emit('error', err);
     } else {
@@ -92,22 +86,22 @@ function imapMail() {
 
 function parseUnread() {
   var self = this;
-  this.imap.search(self.searchFilter, function(err, results) {
+  this.imap.search(self.searchFilter, function (err, results) {
     if (err) {
       self.emit('error', err);
     } else if (results.length > 0) {
-      async.each(results, function( result, resultCallback) {
+      async.each(results, function (result, resultCallback) {
         var callback1 = _.after(2, resultCallback);
         var f = self.imap.fetch(result, {
           bodies: '',
           markSeen: self.markSeen
         });
-        f.on('message', function(msg, seqno) {
+        f.on('message', function (msg, seqno) {
           var parser = new MailParser(self.mailParserOptions);
           var attributes = null;
-          parser.on("end", function(mail) {
+          parser.on("end", function (mail) {
             if (!self.mailParserOptions.streamAttachments && mail.attachments && self.attachments) {
-              async.each(mail.attachments, function( attachment, callback2) {
+              async.each(mail.attachments, function (attachment, callback2) {
                 fs.writeFile( self.attachmentOptions.directory + attachment.generatedFileName, attachment.content, function (err) {
                   if (err) {
                     self.emit('error', err);
@@ -115,11 +109,9 @@ function parseUnread() {
                     attachment.path = path.resolve(self.attachmentOptions.directory + attachment.generatedFileName);
                     self.emit('attachment', attachment);
                   }
-
                   callback2();
                 });
-              }, function(err) {
-
+              }, function (err) {
                 self.emit('mail', mail, seqno, attributes);
                 callback1();
               });
@@ -132,37 +124,30 @@ function parseUnread() {
           parser.on("attachment", function (attachment, email) {
             self.emit('attachment', attachment, email);
           });
-          msg.on('body', function(stream, info) {
+          msg.on('body', function (stream, info) {
             stream.pipe(parser);
           });
-          msg.on('attributes', function(attrs) {
+          msg.on('attributes', function (attrs) {
             attributes = attrs;
           });
         });
 
-        f.once('error', function(err) {
+        f.once('error', function (err) {
           self.emit('error', err);
         });
-        f.once('end', function(err) {
+        f.once('end', function (err) {
           callback1();
         });
       }, function (err) {
         if (err) {
           self.emit('error', err);
         }
-        setTimeout(function () {
-          console.log("mail listener: stopping")
           self.stop();
-        }, self.pollingBreak)
       });
     } else {
-      setTimeout(function () {
-        console.log("mail listener: stopping")
         self.stop();
-      }, self.pollingBreak)
     }
   });
 }
-
 
 module.exports = MailListener;
